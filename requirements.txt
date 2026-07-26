@@ -28,3 +28,17 @@ requests>=2.31.0
 
 # Utilities
 python-dotenv>=1.0.0
+fastapi
+gtfs-realtime-bindings
+httpx
+numpy
+pandas
+plotly
+python-dotenv
+requests
+scikit-learn
+sqlalchemy
+streamlit
+uvicorn
+tensorflow
+psycopg2-binary
