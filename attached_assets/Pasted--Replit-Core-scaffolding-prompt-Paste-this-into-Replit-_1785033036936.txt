@@ -1,0 +1,78 @@
+# Replit Core scaffolding prompt
+
+Paste this into Replit's Agent to scaffold the project.
+
+---
+
+I'm building a real-time ML pipeline that predicts bus arrival delays for UNC/Chapel Hill Transit, using their public GTFS-RT feed. This is a portfolio project meant to demonstrate data engineering + ML infrastructure skills, not just model-building — so the pipeline architecture matters as much as the model itself.
+
+## System overview
+
+Six stages, in order:
+1. **Ingestion poller** — polls the GTFS-RT `VehiclePositions` and `TripUpdates` endpoints every 15 seconds, decodes the protobuf response, and writes raw records to storage.
+2. **Event store** — persists every polled snapshot (Postgres if available in this environment, otherwise SQLite).
+3. **Feature engineering** — computes rolling aggregates from stored history (e.g., recent delay trend per route, time-of-day, day-of-week, stop-sequence progress).
+4. **Model training** — an offline batch job that trains a Keras model on accumulated historical data to predict `arrival.delay` (seconds) from the engineered features.
+5. **Model serving** — a FastAPI service exposing a `/predict` endpoint that loads the latest trained model and returns a delay prediction for a given feature vector.
+6. **Dashboard** — a Streamlit app that calls the serving API and displays live predictions alongside actual outcomes, plus basic throughput/latency stats.
+
+## What I need scaffolded
+
+**Project structure:**
+```
+/ingestion       - async polling service
+/storage         - DB schema + connection layer
+/features        - rolling aggregation logic
+/model           - training script + saved model artifacts
+/serving         - FastAPI app
+/dashboard       - Streamlit app
+```
+
+**Dependencies to set up:**
+- `httpx` (async HTTP client for polling)
+- `gtfs-realtime-bindings` (protobuf parsing for GTFS-RT)
+- `sqlalchemy` + `psycopg2` (or `sqlite3` if Postgres isn't available in this environment — pick whichever is simpler to run here and tell me which you chose)
+- `pandas` (feature engineering)
+- `tensorflow` (model training — I have prior Keras experience, no PyTorch)
+- `fastapi` + `uvicorn` (serving)
+- `streamlit` (dashboard)
+
+**Ingestion service requirements:**
+- Runs as a long-lived async loop, polling both `VehiclePositions` and `TripUpdates` endpoints concurrently (`asyncio.gather`)
+- Wraps each poll in try/except so a single failed request doesn't kill the loop — log and continue
+- Writes raw decoded records to the event store on every successful poll
+- Treats an empty entity list as valid (off-hours), not an error — but logs it distinctly from a request failure
+
+**Storage schema:**
+- A `vehicle_positions` table: vehicle_id, trip_id, route_id, lat, lon, speed, stop_sequence, polled_at
+- A `trip_updates` table: trip_id, route_id, stop_id, predicted_arrival_delay_seconds, arrival_time, polled_at
+- Index on `polled_at` and `route_id` for efficient time-window queries later
+
+**Feature engineering:**
+- Rolling window aggregation (e.g., mean delay per route over the last N minutes) computed incrementally where possible, not recomputed from scratch on every call
+- Output should be a clean feature vector ready to feed into both training and the serving endpoint (shared code path for both, so training/serving feature logic can't drift apart)
+
+**Model training:**
+- Simple, interpretable Keras model to start (a small feedforward network is fine) — the point of this project is the pipeline, not model novelty
+- Train/eval split by time (not random shuffle, since this is time-series data)
+- Save the trained model artifact in a way the serving layer can load it
+
+**Serving:**
+- FastAPI `/predict` endpoint accepting a feature vector, returning a predicted delay
+- Basic request logging (latency, timestamp) so I can report throughput/latency numbers later
+
+**Dashboard:**
+- Live-updating view: current predictions vs. actual delays as they resolve
+- A simple throughput/latency chart pulling from the serving logs
+
+## Constraints and preferences
+
+- I have TensorFlow/Keras experience, no PyTorch — stick to Keras for the model
+- I have prior `asyncio` experience (built a real-time voice AI system using it), so the async polling pattern should be idiomatic, not simplified
+- Prioritize getting the ingestion → storage pipeline running and accumulating real data FIRST, before building the model — I can't train anything until there's real historical data collected
+- Explain any architectural decision you make that deviates from what I've described above, rather than silently changing it
+- I'll provide the actual GTFS-RT feed URL(s) once scaffolding is in place — use a placeholder env variable for now
+
+## First deliverable
+
+Get the ingestion service running end-to-end against a placeholder/mock feed response, writing to the database, so I can verify the pipeline works before plugging in the real UNC feed URL.
