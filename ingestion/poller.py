@@ -14,7 +14,8 @@ Environment variables (set in .env):
 import asyncio
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -40,6 +41,27 @@ TRIP_UPDATES_URL = os.getenv(
     "http://localhost:8999/mock/trip_updates",         # placeholder / mock
 )
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
+
+
+# ---------------------------------------------------------------------------
+# Route-ID extraction — real Chapel Hill Transit feeds leave route_id blank
+# but encode the route abbreviation as the first token of trip_id, e.g.
+#   "NS_N_2220_Mon - Fri" → "NS"
+#   "FCX_E_0753_Mon - Fri" → "FCX"
+# ---------------------------------------------------------------------------
+
+_TRIP_ID_ROUTE_RE = re.compile(r"^([A-Za-z0-9]+)_")
+
+
+def _extract_route_id(trip_id: str | None, route_id: str | None) -> str | None:
+    """Return the best available route_id, falling back to parsing trip_id."""
+    if route_id:
+        return route_id
+    if trip_id:
+        m = _TRIP_ID_ROUTE_RE.match(trip_id)
+        if m:
+            return m.group(1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +96,19 @@ def _write_vehicle_positions(feed: gtfs_realtime_pb2.FeedMessage, polled_at: dat
     for entity in entities:
         v = entity.vehicle
         pos = v.position if v.HasField("position") else None
+        trip_id = v.trip.trip_id or None
+        route_id = _extract_route_id(trip_id, v.trip.route_id or None)
         records.append(
             VehiclePosition(
                 vehicle_id=v.vehicle.id if v.vehicle.id else entity.id,
-                trip_id=v.trip.trip_id or None,
-                route_id=v.trip.route_id or None,
+                trip_id=trip_id,
+                route_id=route_id,
                 lat=pos.latitude if pos else None,
                 lon=pos.longitude if pos else None,
+                bearing=pos.bearing if pos and pos.bearing else None,
                 speed=pos.speed if pos and pos.speed else None,
+                current_status=v.current_status if v.current_status else None,
+                stop_id=v.stop_id or None,
                 stop_sequence=v.current_stop_sequence or None,
                 polled_at=polled_at,
             )
@@ -106,20 +133,23 @@ def _write_trip_updates(feed: gtfs_realtime_pb2.FeedMessage, polled_at: datetime
     for entity in entities:
         tu = entity.trip_update
         trip_id = tu.trip.trip_id
-        route_id = tu.trip.route_id or None
+        route_id = _extract_route_id(trip_id, tu.trip.route_id or None)
 
         for stu in tu.stop_time_update:
             arrival_delay = stu.arrival.delay if stu.HasField("arrival") else None
+            departure_delay = stu.departure.delay if stu.HasField("departure") else None
             arrival_time_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else None
             arrival_time = (
-                datetime.utcfromtimestamp(arrival_time_ts) if arrival_time_ts else None
+                datetime.fromtimestamp(arrival_time_ts, tz=timezone.utc) if arrival_time_ts else None
             )
             records.append(
                 TripUpdate(
                     trip_id=trip_id,
                     route_id=route_id,
                     stop_id=stu.stop_id or None,
+                    stop_sequence=stu.stop_sequence or None,
                     predicted_arrival_delay_seconds=arrival_delay,
+                    predicted_departure_delay_seconds=departure_delay,
                     arrival_time=arrival_time,
                     polled_at=polled_at,
                 )
@@ -139,7 +169,7 @@ def _write_trip_updates(feed: gtfs_realtime_pb2.FeedMessage, polled_at: datetime
 
 async def poll_once(client: httpx.AsyncClient) -> None:
     """Concurrently fetch both feeds and persist results."""
-    polled_at = datetime.utcnow()
+    polled_at = datetime.now(timezone.utc)
 
     vp_feed, tu_feed = await asyncio.gather(
         _fetch_feed(client, VEHICLE_POSITIONS_URL, "vehicle_positions"),

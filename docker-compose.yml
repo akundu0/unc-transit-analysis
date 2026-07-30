@@ -1,0 +1,77 @@
+version: "3.9"
+
+x-common-env: &common-env
+  DATABASE_URL: postgresql+psycopg2://transit:transit@postgres:5432/unc_transit
+  GTFS_RT_VEHICLE_POSITIONS_URL: ${GTFS_RT_VEHICLE_POSITIONS_URL:-https://mychtransit.org/gtfs-rt/vehiclepositions}
+  GTFS_RT_TRIP_UPDATES_URL: ${GTFS_RT_TRIP_UPDATES_URL:-https://mychtransit.org/gtfs-rt/tripupdates}
+  POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+  SERVING_API_URL: http://api:8000
+  DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-15}
+
+services:
+  # ── Postgres ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: transit
+      POSTGRES_PASSWORD: transit
+      POSTGRES_DB: unc_transit
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transit"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Schema migrations ────────────────────────────────────────────────────
+  migrate:
+    build: .
+    command: python -m alembic upgrade head
+    environment:
+      <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Ingestion poller ──────────────────────────────────────────────────────
+  poller:
+    build: .
+    command: python run_ingestion.py
+    environment:
+      <<: *common-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── FastAPI serving layer ─────────────────────────────────────────────────
+  api:
+    build: .
+    command: uvicorn serving.app:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *common-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Streamlit dashboard ───────────────────────────────────────────────────
+  dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    environment:
+      <<: *common-env
+    ports:
+      - "8501:8501"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

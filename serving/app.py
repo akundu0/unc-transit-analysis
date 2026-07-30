@@ -15,7 +15,7 @@ import os
 import pickle
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -124,7 +124,7 @@ def predict(req: PredictRequest):
     prediction = float(_model.predict(vec_scaled, verbose=0)[0][0])
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    ts = datetime.utcnow().isoformat()
+    ts = datetime.now(timezone.utc).isoformat()
 
     entry = {
         "timestamp": ts,

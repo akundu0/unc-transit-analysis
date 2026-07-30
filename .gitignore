@@ -48,3 +48,12 @@ Thumbs.db
 .cache/
 .local/
 __pycache__/
+*.db
+.env
+.env.local
+/.venv/
+bin/
+lib/
+include/
+share/
+etc/

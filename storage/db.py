@@ -37,7 +37,26 @@ def get_db():
 
 
 def init_db():
-    """Create all tables declared in storage.models (idempotent)."""
+    """Apply Alembic migrations to bring the DB schema to head.
+
+    Falls back to create_all() if Alembic is not installed or migration
+    files are missing (e.g. in a minimal test environment).
+    """
+    try:
+        from alembic import command
+        from alembic.config import Config
+        import os
+
+        ini_path = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
+        if os.path.exists(ini_path):
+            alembic_cfg = Config(ini_path)
+            alembic_cfg.set_main_option("sqlalchemy.url", _DATABASE_URL)
+            command.upgrade(alembic_cfg, "head")
+            print(f"[storage] Alembic migrations applied → {_DATABASE_URL}")
+            return
+    except Exception as exc:
+        print(f"[storage] Alembic migration skipped ({exc}), falling back to create_all")
+
     from storage import models  # noqa: F401 — registers ORM metadata
     Base.metadata.create_all(bind=engine)
-    print(f"[storage] Database initialised → {_DATABASE_URL}")
+    print(f"[storage] Database initialised (create_all) → {_DATABASE_URL}")

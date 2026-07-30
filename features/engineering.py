@@ -18,7 +18,7 @@ Feature vector (in order, as a dict → list via `to_vector`):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -94,7 +94,7 @@ def compute_features(
     dict mapping FEATURE_NAMES to float values
     """
     if as_of is None:
-        as_of = datetime.utcnow()
+        as_of = datetime.now(timezone.utc)
 
     df_15 = _query_trip_updates(route_id, 15, as_of)
     df_60 = _query_trip_updates(route_id, 60, as_of)
@@ -132,8 +132,9 @@ def build_training_dataset(start: Optional[datetime] = None, end: Optional[datet
     """
     sql = text(
         """
-        SELECT id, route_id, stop_id, predicted_arrival_delay_seconds AS label,
-               polled_at, stop_id
+        SELECT id, route_id, stop_id, stop_sequence,
+               predicted_arrival_delay_seconds AS label,
+               polled_at
         FROM trip_updates
         WHERE predicted_arrival_delay_seconds IS NOT NULL
           AND route_id IS NOT NULL
@@ -157,6 +158,7 @@ def build_training_dataset(start: Optional[datetime] = None, end: Optional[datet
         try:
             feats = compute_features(
                 route_id=row["route_id"],
+                stop_sequence=row.get("stop_sequence"),
                 as_of=row["polled_at"],
             )
             feats["label"] = float(row["label"])
