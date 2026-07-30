@@ -30,7 +30,86 @@ GTFS-RT feed (VehiclePositions + TripUpdates)
                                     └─────────────────┘
 ```
 
-## Quick start
+## Quick start (Docker — recommended)
+
+Docker Compose runs the full stack: Postgres, Alembic migrations, the GTFS-RT poller, the FastAPI serving layer, and the Streamlit dashboard.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) **or** [Colima](https://github.com/abiosoft/colima) (macOS lightweight Docker runtime)
+- `docker compose` (bundled with Docker Desktop; also available via `brew install docker-compose`)
+
+### 1. Start the Docker daemon
+
+**Docker Desktop** — open the app; the daemon starts automatically.
+
+**Colima (macOS homebrew)**:
+
+```bash
+colima start
+```
+
+### 2. Configure environment (optional)
+
+```bash
+cp .env.example .env
+# Defaults already point to the live Chapel Hill Transit GTFS-RT feed.
+# Edit only if you need to override URLs or intervals.
+```
+
+### 3. Build images and start all services
+
+```bash
+docker compose up --build -d
+```
+
+This will:
+1. Pull `postgres:16-alpine` and build the app image
+2. Run Alembic migrations (`migrate` service exits cleanly once done)
+3. Start the GTFS-RT poller (polls every 15 s)
+4. Start the FastAPI prediction API on **port 8000**
+5. Start the Streamlit dashboard on **port 8501**
+
+### 4. Open the dashboard
+
+```
+http://localhost:8501
+```
+
+The sidebar shows live row counts. Charts populate after a minute or two of polling.
+
+### 5. View logs
+
+```bash
+# All services
+docker compose logs -f
+
+# Single service
+docker compose logs -f poller
+docker compose logs -f dashboard
+```
+
+### 6. Stop the stack
+
+```bash
+docker compose down
+```
+
+To also delete the Postgres volume (wipes all collected data):
+
+```bash
+docker compose down -v
+```
+
+### 7. Restart after code changes
+
+```bash
+docker compose up --build -d
+```
+
+---
+
+## Local development (without Docker)
 
 ### 1. Install dependencies
 
@@ -42,7 +121,7 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-# Edit .env — set real GTFS-RT URLs when available; defaults point to mock server
+# Defaults use SQLite (unc_transit.db); set DATABASE_URL for Postgres.
 ```
 
 ### 3. Run the mock server (local end-to-end test)
@@ -106,26 +185,72 @@ streamlit run dashboard/app.py
 | `day_of_week` | 0 (Mon) – 6 (Sun) |
 | `stop_sequence_norm` | stop_sequence / 50 |
 
-## Switching to Postgres
+## Database options
 
-Set `DATABASE_URL` in `.env`:
+### Option 1: SQLite (default)
+
+Zero-setup, good for local dev. Data lives in `unc_transit.db`.
+
+### Option 2: Supabase Cloud Postgres (recommended)
+
+Persistent cloud database — data survives restarts and is accessible from anywhere.
+
+1. Create a free account at [supabase.com](https://supabase.com)
+2. Create a new project (Region: US East)
+3. Go to **Settings → Database → Connection string → URI tab**
+4. Copy the **Session Mode** connection string
+5. Set it in `.env`:
+
+```bash
+DATABASE_URL=postgresql+psycopg2://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+```
+
+6. Run migrations: `python -m alembic upgrade head`
+7. Start the poller: `python run_ingestion.py`
+
+**Free tier:** 500 MB storage, 50 connections, daily backups.
+
+To use Supabase with Docker Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.supabase.yml up --build -d
+```
+
+### Option 3: Local Postgres (via Docker Compose)
+
+```bash
+docker compose up --build -d    # includes a local Postgres container
+```
+
+### Switching databases
+
+Only one env var change is needed — the rest of the codebase is DB-agnostic:
+
+```bash
+# .env
+DATABASE_URL=postgresql+psycopg2://user:password@host:5432/dbname
+```
+
+## Static GTFS data (route/stop enrichment)
+
+Download the Chapel Hill Transit schedule data to enrich the dashboard with route names and official colors:
+
+```bash
+python scripts/load_gtfs_static.py
+```
+
+This downloads `http://mychtransit.org/gtfs` and produces JSON lookup files in `data/gtfs_static/`. The dashboard automatically loads these if present.
+
+## Real-time feed
+
+The poller connects to Chapel Hill Transit's live GTFS-RT feeds by default:
 
 ```
-DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/unc_transit
+GTFS_RT_VEHICLE_POSITIONS_URL=https://mychtransit.org/gtfs-rt/vehiclepositions
+GTFS_RT_TRIP_UPDATES_URL=https://mychtransit.org/gtfs-rt/tripupdates
 ```
 
-No other code changes needed — SQLAlchemy abstracts the difference.
-
-## Plugging in the real feed
-
-Once you have the UNC/Chapel Hill Transit GTFS-RT URLs, update `.env`:
-
-```
-GTFS_RT_VEHICLE_POSITIONS_URL=<real URL>
-GTFS_RT_TRIP_UPDATES_URL=<real URL>
-```
-
-Restart the poller — no code changes required.
+**Operating hours:** ~7 AM – 10 PM ET. Non-zero delays appear during rush hours (7-9 AM, 4-6 PM ET).
 
 ## Architectural decisions
 

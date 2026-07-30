@@ -1,7 +1,7 @@
 version: "3.9"
 
 x-common-env: &common-env
-  DATABASE_URL: postgresql+psycopg2://transit:transit@postgres:5432/unc_transit
+  DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://transit:transit@postgres:5432/unc_transit}
   GTFS_RT_VEHICLE_POSITIONS_URL: ${GTFS_RT_VEHICLE_POSITIONS_URL:-https://mychtransit.org/gtfs-rt/vehiclepositions}
   GTFS_RT_TRIP_UPDATES_URL: ${GTFS_RT_TRIP_UPDATES_URL:-https://mychtransit.org/gtfs-rt/tripupdates}
   POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}

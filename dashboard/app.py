@@ -8,8 +8,17 @@ Works standalone by reading directly from the event-store DB.
 Optionally shows ML prediction stats when the serving API is running.
 """
 
+import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# Ensure project root is on sys.path so 'storage', 'ingestion', etc. are importable
+# regardless of the working directory (e.g. inside Docker).
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import pandas as pd
 import plotly.express as px
@@ -26,6 +35,24 @@ load_dotenv()
 SERVING_URL = os.getenv("SERVING_API_URL", "http://localhost:8000")
 REFRESH_SECONDS = int(os.getenv("DASHBOARD_REFRESH_SECONDS", "15"))
 
+# Load GTFS static route metadata (colors, long names) if available
+_ROUTE_LOOKUP_PATH = Path(_PROJECT_ROOT) / "data" / "gtfs_static" / "route_lookup.json"
+ROUTE_LOOKUP: dict = {}
+if _ROUTE_LOOKUP_PATH.exists():
+    with open(_ROUTE_LOOKUP_PATH) as f:
+        ROUTE_LOOKUP = json.load(f)
+
+def route_color_map() -> dict[str, str]:
+    """Return {route_short_name: hex_color} for plotly charts."""
+    return {k: v["color"] for k, v in ROUTE_LOOKUP.items() if v.get("color")}
+
+def route_display_name(short: str) -> str:
+    """Return 'NS — Eubanks Rd / Southern Village' or just 'NS' if lookup missing."""
+    meta = ROUTE_LOOKUP.get(short)
+    if meta and meta.get("long_name"):
+        return f"{short} — {meta['long_name']}"
+    return short
+
 st.set_page_config(
     page_title="UNC Transit Delay Dashboard",
     page_icon="🚌",
@@ -38,103 +65,123 @@ st.set_page_config(
 
 @st.cache_data(ttl=REFRESH_SECONDS)
 def query_vehicle_positions(since: datetime, limit: int = 5000) -> pd.DataFrame:
-    sql = text("""
-        SELECT vehicle_id, trip_id, route_id, lat, lon, bearing, speed,
-               current_status, stop_id, stop_sequence, polled_at
-        FROM vehicle_positions
-        WHERE polled_at >= :since
-        ORDER BY polled_at DESC
-        LIMIT :limit
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"since": since, "limit": limit})
-    if not df.empty:
-        df["polled_at"] = pd.to_datetime(df["polled_at"])
-    return df
+    try:
+        sql = text("""
+            SELECT vehicle_id, trip_id, route_id, lat, lon, bearing, speed,
+                   current_status, stop_id, stop_sequence, polled_at
+            FROM vehicle_positions
+            WHERE polled_at >= :since
+            ORDER BY polled_at DESC
+            LIMIT :limit
+        """)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"since": since, "limit": limit})
+        if not df.empty:
+            df["polled_at"] = pd.to_datetime(df["polled_at"])
+        return df
+    except Exception as exc:
+        st.session_state["_err_vehicle_positions"] = str(exc)
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=REFRESH_SECONDS)
 def query_trip_updates(since: datetime, limit: int = 5000) -> pd.DataFrame:
-    sql = text("""
-        SELECT trip_id, route_id, stop_id, stop_sequence,
-               predicted_arrival_delay_seconds AS delay_s,
-               predicted_departure_delay_seconds AS dep_delay_s,
-               arrival_time, polled_at
-        FROM trip_updates
-        WHERE polled_at >= :since
-          AND predicted_arrival_delay_seconds IS NOT NULL
-        ORDER BY polled_at DESC
-        LIMIT :limit
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"since": since, "limit": limit})
-    if not df.empty:
-        df["polled_at"] = pd.to_datetime(df["polled_at"])
-    return df
+    try:
+        sql = text("""
+            SELECT trip_id, route_id, stop_id, stop_sequence,
+                   predicted_arrival_delay_seconds AS delay_s,
+                   predicted_departure_delay_seconds AS dep_delay_s,
+                   arrival_time, polled_at
+            FROM trip_updates
+            WHERE polled_at >= :since
+              AND predicted_arrival_delay_seconds IS NOT NULL
+            ORDER BY polled_at DESC
+            LIMIT :limit
+        """)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"since": since, "limit": limit})
+        if not df.empty:
+            df["polled_at"] = pd.to_datetime(df["polled_at"])
+        return df
+    except Exception as exc:
+        st.session_state["_err_trip_updates"] = str(exc)
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=REFRESH_SECONDS)
 def query_ingestion_health() -> dict:
     """Return row counts and latest poll timestamps for health monitoring."""
-    with engine.connect() as conn:
-        vp_count = conn.execute(text("SELECT COUNT(*) FROM vehicle_positions")).scalar()
-        tu_count = conn.execute(text("SELECT COUNT(*) FROM trip_updates")).scalar()
-        vp_latest = conn.execute(text("SELECT MAX(polled_at) FROM vehicle_positions")).scalar()
-        tu_latest = conn.execute(text("SELECT MAX(polled_at) FROM trip_updates")).scalar()
-        vp_routes = conn.execute(text("SELECT COUNT(DISTINCT route_id) FROM vehicle_positions")).scalar()
-        tu_routes = conn.execute(text("SELECT COUNT(DISTINCT route_id) FROM trip_updates")).scalar()
-    return {
-        "vp_count": vp_count or 0,
-        "tu_count": tu_count or 0,
-        "vp_latest": vp_latest,
-        "tu_latest": tu_latest,
-        "vp_routes": vp_routes or 0,
-        "tu_routes": tu_routes or 0,
-    }
+    try:
+        with engine.connect() as conn:
+            vp_count = conn.execute(text("SELECT COUNT(*) FROM vehicle_positions")).scalar()
+            tu_count = conn.execute(text("SELECT COUNT(*) FROM trip_updates")).scalar()
+            vp_latest = conn.execute(text("SELECT MAX(polled_at) FROM vehicle_positions")).scalar()
+            tu_latest = conn.execute(text("SELECT MAX(polled_at) FROM trip_updates")).scalar()
+            vp_routes = conn.execute(text("SELECT COUNT(DISTINCT route_id) FROM vehicle_positions")).scalar()
+            tu_routes = conn.execute(text("SELECT COUNT(DISTINCT route_id) FROM trip_updates")).scalar()
+        return {
+            "vp_count": vp_count or 0,
+            "tu_count": tu_count or 0,
+            "vp_latest": vp_latest,
+            "tu_latest": tu_latest,
+            "vp_routes": vp_routes or 0,
+            "tu_routes": tu_routes or 0,
+        }
+    except Exception as exc:
+        st.session_state["_err_health"] = str(exc)
+        return {"vp_count": 0, "tu_count": 0, "vp_latest": None, "tu_latest": None, "vp_routes": 0, "tu_routes": 0}
 
 
 @st.cache_data(ttl=60)
 def query_route_summary(since: datetime) -> pd.DataFrame:
-    sql = text("""
-        SELECT route_id,
-               COUNT(*)                                       AS obs,
-               ROUND(AVG(predicted_arrival_delay_seconds), 1) AS mean_delay,
-               MIN(predicted_arrival_delay_seconds)           AS min_delay,
-               MAX(predicted_arrival_delay_seconds)           AS max_delay,
-               MIN(polled_at) AS first_seen,
-               MAX(polled_at) AS last_seen
-        FROM trip_updates
-        WHERE polled_at >= :since
-          AND predicted_arrival_delay_seconds IS NOT NULL
-          AND route_id IS NOT NULL
-        GROUP BY route_id
-        ORDER BY mean_delay DESC
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(sql, conn, params={"since": since})
+    try:
+        sql = text("""
+            SELECT route_id,
+                   COUNT(*)                                       AS obs,
+                   ROUND(AVG(predicted_arrival_delay_seconds), 1) AS mean_delay,
+                   MIN(predicted_arrival_delay_seconds)           AS min_delay,
+                   MAX(predicted_arrival_delay_seconds)           AS max_delay,
+                   MIN(polled_at) AS first_seen,
+                   MAX(polled_at) AS last_seen
+            FROM trip_updates
+            WHERE polled_at >= :since
+              AND predicted_arrival_delay_seconds IS NOT NULL
+              AND route_id IS NOT NULL
+            GROUP BY route_id
+            ORDER BY mean_delay DESC
+        """)
+        with engine.connect() as conn:
+            return pd.read_sql(sql, conn, params={"since": since})
+    except Exception as exc:
+        st.session_state["_err_route_summary"] = str(exc)
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=REFRESH_SECONDS)
 def query_delay_timeseries(since: datetime) -> pd.DataFrame:
     """Average delay per route per 5-minute bucket for trend charts."""
-    sql = text("""
-        SELECT route_id, predicted_arrival_delay_seconds AS delay, polled_at
-        FROM trip_updates
-        WHERE polled_at >= :since
-          AND predicted_arrival_delay_seconds IS NOT NULL
-          AND route_id IS NOT NULL
-        ORDER BY polled_at
-    """)
-    with engine.connect() as conn:
-        df = pd.read_sql(sql, conn, params={"since": since})
-    if df.empty:
-        return df
-    df["polled_at"] = pd.to_datetime(df["polled_at"])
-    df["time"] = df["polled_at"].dt.floor("5min")
-    agg = df.groupby(["route_id", "time"]).agg(
-        mean_delay=("delay", "mean"), obs=("delay", "count")
-    ).reset_index()
-    return agg
+    try:
+        sql = text("""
+            SELECT route_id, predicted_arrival_delay_seconds AS delay, polled_at
+            FROM trip_updates
+            WHERE polled_at >= :since
+              AND predicted_arrival_delay_seconds IS NOT NULL
+              AND route_id IS NOT NULL
+            ORDER BY polled_at
+        """)
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn, params={"since": since})
+        if df.empty:
+            return df
+        df["polled_at"] = pd.to_datetime(df["polled_at"])
+        df["time"] = df["polled_at"].dt.floor("5min")
+        agg = df.groupby(["route_id", "time"]).agg(
+            mean_delay=("delay", "mean"), obs=("delay", "count")
+        ).reset_index()
+        return agg
+    except Exception as exc:
+        st.session_state["_err_timeseries"] = str(exc)
+        return pd.DataFrame()
 
 
 def check_api_health() -> bool:
@@ -199,10 +246,25 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Load data
 # ---------------------------------------------------------------------------
+
+# Clear previous query errors
+for k in list(st.session_state):
+    if k.startswith("_err_"):
+        del st.session_state[k]
+
 vp_df = query_vehicle_positions(since)
 tu_df = query_trip_updates(since)
 ts_df = query_delay_timeseries(since)
 route_df = query_route_summary(since)
+
+# Show any DB errors prominently so users know why charts are empty
+_db_errors = {k: v for k, v in st.session_state.items() if k.startswith("_err_")}
+if _db_errors:
+    with st.sidebar:
+        st.error("Database query errors detected")
+        for key, msg in _db_errors.items():
+            source = key.replace("_err_", "").replace("_", " ").title()
+            st.caption(f"**{source}:** `{msg}`")
 
 def _filter_route(df: pd.DataFrame, pattern: str) -> pd.DataFrame:
     if df.empty or "route_id" not in df.columns:
@@ -253,6 +315,7 @@ with tab_live:
                 .drop_duplicates(subset=["vehicle_id"], keep="last")
             )
             if not latest_vp.empty:
+                _colors = route_color_map()
                 fig_map = px.scatter_map(
                     latest_vp,
                     lat="lat",
@@ -260,6 +323,7 @@ with tab_live:
                     color="route_id",
                     hover_name="vehicle_id",
                     hover_data=["trip_id", "speed", "polled_at"],
+                    color_discrete_map=_colors if _colors else None,
                     zoom=13,
                     height=420,
                 )
@@ -268,7 +332,10 @@ with tab_live:
             else:
                 st.info("Vehicle positions have no lat/lon data yet.")
         else:
-            st.info("No vehicle position data in this window. Is the poller running?")
+            if "_err_vehicle_positions" in st.session_state:
+                st.error(f"Failed to load vehicle positions: `{st.session_state['_err_vehicle_positions']}`")
+            else:
+                st.info("No vehicle position data in this window. Is the poller running?")
 
     with col_delays:
         st.subheader("Current delays by route")
@@ -295,7 +362,10 @@ with tab_live:
             )
             st.plotly_chart(fig_bar, use_container_width=True)
         else:
-            st.info("No trip update data in this window.")
+            if "_err_trip_updates" in st.session_state:
+                st.error(f"Failed to load trip updates: `{st.session_state['_err_trip_updates']}`")
+            else:
+                st.info("No trip update data in this window.")
 
     # Recent raw data
     with st.expander("Recent vehicle positions (raw)"):
@@ -315,18 +385,23 @@ with tab_live:
 with tab_hist:
     st.subheader(f"Delay trends — last {lookback_hours}h (5-min buckets)")
     if not ts_df.empty:
+        _colors = route_color_map()
         fig_ts = px.line(
             ts_df,
             x="time",
             y="mean_delay",
             color="route_id",
+            color_discrete_map=_colors if _colors else None,
             labels={"mean_delay": "Mean delay (s)", "time": "Time (UTC)"},
             height=400,
         )
         fig_ts.update_layout(margin=dict(t=20, b=20))
         st.plotly_chart(fig_ts, use_container_width=True)
     else:
-        st.info("Not enough data for trend analysis. Let the poller run to accumulate history.")
+        if "_err_timeseries" in st.session_state:
+            st.error(f"Failed to load trend data: `{st.session_state['_err_timeseries']}`")
+        else:
+            st.info("Not enough data for trend analysis. Let the poller run to accumulate history.")
 
     st.divider()
 
@@ -335,10 +410,12 @@ with tab_hist:
     with col_dist:
         st.subheader("Delay distribution")
         if not tu_df.empty:
+            _colors = route_color_map()
             fig_hist = px.histogram(
                 tu_df,
                 x="delay_s",
                 color="route_id",
+                color_discrete_map=_colors if _colors else None,
                 nbins=40,
                 labels={"delay_s": "Delay (seconds)"},
                 height=350,
@@ -348,7 +425,10 @@ with tab_hist:
             fig_hist.update_layout(margin=dict(t=20, b=20))
             st.plotly_chart(fig_hist, use_container_width=True)
         else:
-            st.info("No delay data.")
+            if "_err_trip_updates" in st.session_state:
+                st.error(f"Failed to load delay data: `{st.session_state['_err_trip_updates']}`")
+            else:
+                st.info("No delay data.")
 
     with col_heat:
         st.subheader("Delay heatmap (route vs hour)")
@@ -388,17 +468,22 @@ with tab_routes:
             hide_index=True,
         )
     else:
-        st.info("No route data in this window.")
+        if "_err_route_summary" in st.session_state:
+            st.error(f"Failed to load route summary: `{st.session_state['_err_route_summary']}`")
+        else:
+            st.info("No route data in this window.")
 
     st.divider()
 
     if not tu_df.empty:
         st.subheader("Delay by route — box plot")
+        _colors = route_color_map()
         fig_box = px.box(
             tu_df,
             x="route_id",
             y="delay_s",
             color="route_id",
+            color_discrete_map=_colors if _colors else None,
             labels={"delay_s": "Delay (seconds)", "route_id": "Route"},
             height=400,
         )

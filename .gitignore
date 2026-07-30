@@ -51,6 +51,7 @@ __pycache__/
 *.db
 .env
 .env.local
+data/
 /.venv/
 bin/
 lib/
