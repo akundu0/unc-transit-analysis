@@ -12,11 +12,14 @@ Environment variables (set in .env):
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import load_dotenv
@@ -26,6 +29,26 @@ from storage.db import SessionLocal, init_db
 from storage.models import VehiclePosition, TripUpdate
 
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Static GTFS schedule lookup for delay computation
+# ---------------------------------------------------------------------------
+# Maps "trip_id|stop_id" -> scheduled arrival as seconds since midnight.
+# Used to compute delay when the feed only provides predicted arrival time
+# (without an explicit delay field).
+_SCHEDULE_LOOKUP: dict[str, int] = {}
+_SCHEDULE_PATH = Path(__file__).resolve().parent.parent / "data" / "gtfs_static" / "schedule_lookup.json"
+if _SCHEDULE_PATH.exists():
+    with open(_SCHEDULE_PATH) as _f:
+        _SCHEDULE_LOOKUP = json.load(_f)
+
+# GTFS static times are in the agency's local timezone (agency.txt → agency_timezone)
+_AGENCY_INFO_PATH = _SCHEDULE_PATH.parent / "agency_info.json"
+_agency_tz_name = "America/New_York"  # fallback
+if _AGENCY_INFO_PATH.exists():
+    with open(_AGENCY_INFO_PATH) as _f:
+        _agency_tz_name = json.load(_f).get("agency_timezone", _agency_tz_name)
+_AGENCY_TZ = ZoneInfo(_agency_tz_name)
 
 log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -139,9 +162,30 @@ def _write_trip_updates(feed: gtfs_realtime_pb2.FeedMessage, polled_at: datetime
         route_id = _extract_route_id(trip_id, tu.trip.route_id or None)
 
         for stu in tu.stop_time_update:
-            arrival_delay = stu.arrival.delay if stu.HasField("arrival") else None
-            departure_delay = stu.departure.delay if stu.HasField("departure") else None
-            arrival_time_ts = stu.arrival.time if stu.HasField("arrival") and stu.arrival.time else None
+            # Prefer explicit delay field; fall back to computing from
+            # predicted arrival time vs static schedule.
+            has_arrival = stu.HasField("arrival")
+            if has_arrival and stu.arrival.HasField("delay"):
+                arrival_delay = stu.arrival.delay
+            elif has_arrival and stu.arrival.time and _SCHEDULE_LOOKUP:
+                sched_key = f"{trip_id}|{stu.stop_id}"
+                sched_secs = _SCHEDULE_LOOKUP.get(sched_key)
+                if sched_secs is not None:
+                    pred_dt = datetime.fromtimestamp(stu.arrival.time, tz=timezone.utc)
+                    local_dt = pred_dt.astimezone(_AGENCY_TZ)
+                    pred_secs = local_dt.hour * 3600 + local_dt.minute * 60 + local_dt.second
+                    # GTFS allows sched times > 24:00:00 for overnight trips.
+                    # Align pred_secs to the same scale when schedule wraps past midnight.
+                    if sched_secs >= 86400 and pred_secs < 21600:  # sched is >24h, pred is before 6 AM
+                        pred_secs += 86400
+                    arrival_delay = pred_secs - sched_secs
+                else:
+                    arrival_delay = None
+            else:
+                arrival_delay = None
+
+            departure_delay = stu.departure.delay if stu.HasField("departure") and stu.departure.HasField("delay") else None
+            arrival_time_ts = stu.arrival.time if has_arrival and stu.arrival.time else None
             arrival_time = (
                 datetime.fromtimestamp(arrival_time_ts, tz=timezone.utc) if arrival_time_ts else None
             )

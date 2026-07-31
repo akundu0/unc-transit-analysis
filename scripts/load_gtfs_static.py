@@ -86,6 +86,43 @@ def build_stop_lookup(zip_path: Path) -> dict:
     return lookup
 
 
+def build_agency_info(zip_path: Path) -> dict:
+    """Extract agency metadata (timezone, name, url) from agency.txt."""
+    rows = read_csv_from_zip(zip_path, "agency.txt")
+    if not rows:
+        return {}
+    row = rows[0]  # GTFS allows multiple agencies, use the first
+    return {
+        "agency_name": row.get("agency_name", ""),
+        "agency_timezone": row.get("agency_timezone", "America/New_York"),
+        "agency_url": row.get("agency_url", ""),
+    }
+
+
+def _time_str_to_seconds(t: str) -> int:
+    """Convert HH:MM:SS to seconds since midnight. Handles >24h (e.g. 25:10:00)."""
+    parts = t.strip().split(":")
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+
+
+def build_schedule_lookup(zip_path: Path) -> dict:
+    """Build {trip_id|stop_id: arrival_seconds_since_midnight} lookup.
+
+    Key format uses '|' separator so it can be used as a flat JSON dict.
+    """
+    rows = read_csv_from_zip(zip_path, "stop_times.txt")
+    lookup = {}
+    for row in rows:
+        trip_id = row.get("trip_id", "").strip()
+        stop_id = row.get("stop_id", "").strip()
+        arr_str = row.get("arrival_time", "").strip()
+        if not trip_id or not stop_id or not arr_str:
+            continue
+        key = f"{trip_id}|{stop_id}"
+        lookup[key] = _time_str_to_seconds(arr_str)
+    return lookup
+
+
 def main():
     force = "--force" in sys.argv
 
@@ -98,10 +135,14 @@ def main():
     # Build lookups
     route_lookup = build_route_lookup(zip_path)
     stop_lookup = build_stop_lookup(zip_path)
+    schedule_lookup = build_schedule_lookup(zip_path)
+    agency_info = build_agency_info(zip_path)
 
     # Save JSON lookups
     route_json = DATA_DIR / "route_lookup.json"
     stop_json = DATA_DIR / "stop_lookup.json"
+    schedule_json = DATA_DIR / "schedule_lookup.json"
+    agency_json = DATA_DIR / "agency_info.json"
 
     with open(route_json, "w") as f:
         json.dump(route_lookup, f, indent=2)
@@ -111,10 +152,19 @@ def main():
         json.dump(stop_lookup, f, indent=2)
     print(f"[gtfs] Stop lookup: {len(stop_lookup)} stops → {stop_json}")
 
+    with open(schedule_json, "w") as f:
+        json.dump(schedule_lookup, f)
+    print(f"[gtfs] Schedule lookup: {len(schedule_lookup)} trip-stop pairs → {schedule_json}")
+
+    with open(agency_json, "w") as f:
+        json.dump(agency_info, f, indent=2)
+    print(f"[gtfs] Agency info: {agency_info.get('agency_name')} ({agency_info.get('agency_timezone')}) → {agency_json}")
+
     # Print summary
     print("\n── Route Summary ──")
     for short, meta in sorted(route_lookup.items()):
         print(f"  {short:6s}  {meta['color'] or '       ':9s}  {meta['long_name']}")
+    print(f"\n── Schedule: {len(schedule_lookup)} trip-stop entries ──")
 
 
 if __name__ == "__main__":
