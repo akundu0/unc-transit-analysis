@@ -31,26 +31,39 @@ log = logging.getLogger(__name__)
 DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
 
 
+_ALLOWED_TABLES = frozenset({"vehicle_positions", "trip_updates"})
+
+# Pre-built SQL text objects keyed by (table, action) — avoids f-string interpolation.
+_RETENTION_SQL = {
+    (t, "count"): text(f"SELECT COUNT(*) FROM {t} WHERE polled_at < :cutoff")
+    for t in _ALLOWED_TABLES
+} | {
+    (t, "delete"): text(f"DELETE FROM {t} WHERE polled_at < :cutoff")
+    for t in _ALLOWED_TABLES
+}
+
+
 def purge_old_rows(retention_days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = False) -> dict:
     """Delete rows with polled_at older than `retention_days` days ago.
 
     Returns {"vehicle_positions": n, "trip_updates": m} with counts deleted.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    tables = ["vehicle_positions", "trip_updates"]
     result = {}
 
     with engine.begin() as conn:
-        for table in tables:
+        for table in _ALLOWED_TABLES:
             if dry_run:
-                count_sql = text(f"SELECT COUNT(*) FROM {table} WHERE polled_at < :cutoff")
-                count = conn.execute(count_sql, {"cutoff": cutoff}).scalar()
+                count = conn.execute(
+                    _RETENTION_SQL[(table, "count")], {"cutoff": cutoff}
+                ).scalar()
                 log.info("[retention] DRY RUN: would delete %d rows from %s (older than %s)",
                          count, table, cutoff.isoformat())
                 result[table] = 0
             else:
-                delete_sql = text(f"DELETE FROM {table} WHERE polled_at < :cutoff")
-                res = conn.execute(delete_sql, {"cutoff": cutoff})
+                res = conn.execute(
+                    _RETENTION_SQL[(table, "delete")], {"cutoff": cutoff}
+                )
                 deleted = res.rowcount
                 if deleted > 0:
                     log.info("[retention] Deleted %d rows from %s (older than %s)",

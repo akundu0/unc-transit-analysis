@@ -120,13 +120,24 @@ def to_vector(features: dict) -> list[float]:
     return [features[name] for name in FEATURE_NAMES]
 
 
-def build_training_dataset(start: Optional[datetime] = None, end: Optional[datetime] = None) -> pd.DataFrame:
+def build_training_dataset(
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    max_samples: int = 2000,
+) -> pd.DataFrame:
     """
     Build a labelled dataset from stored history for offline model training.
 
     Strategy: for each TripUpdate row that has a non-null delay, compute the
     feature vector *as of that row's polled_at* timestamp and use the recorded
     delay as the label.
+
+    Parameters
+    ----------
+    max_samples : int
+        Cap on how many rows to process (randomly sampled). Each row requires
+        multiple DB queries for feature computation, so this prevents very long
+        training runs on large datasets.
 
     Returns a DataFrame with columns [*FEATURE_NAMES, "label"].
     """
@@ -153,8 +164,18 @@ def build_training_dataset(start: Optional[datetime] = None, end: Optional[datet
         log.warning("No labelled rows found in DB — collect more data before training.")
         return pd.DataFrame(columns=FEATURE_NAMES + ["label"])
 
+    # Evenly-spaced sampling to keep training time manageable while
+    # preserving temporal distribution for the chronological train/eval split.
+    if len(rows) > max_samples:
+        log.info("Sampling %d rows from %d total for training (every %d-th row)",
+                 max_samples, len(rows), len(rows) // max_samples)
+        step = len(rows) / max_samples
+        indices = [int(i * step) for i in range(max_samples)]
+        rows = rows.iloc[indices].reset_index(drop=True)
+
     records = []
-    for _, row in rows.iterrows():
+    total = len(rows)
+    for i, (_, row) in enumerate(rows.iterrows()):
         try:
             feats = compute_features(
                 route_id=row["route_id"],
@@ -165,6 +186,8 @@ def build_training_dataset(start: Optional[datetime] = None, end: Optional[datet
             records.append(feats)
         except Exception as exc:
             log.debug("Skipping row id=%s: %s", row["id"], exc)
+        if (i + 1) % 200 == 0:
+            log.info("Feature computation progress: %d/%d", i + 1, total)
 
     df = pd.DataFrame(records)
     log.info("Training dataset: %d rows, %d features", len(df), len(FEATURE_NAMES))

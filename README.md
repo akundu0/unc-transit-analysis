@@ -172,6 +172,8 @@ streamlit run dashboard/app.py
 | `model/train.py` | Keras feedforward model; chronological train/eval split |
 | `serving/app.py` | FastAPI `/predict` + `/logs` endpoints |
 | `dashboard/app.py` | Streamlit live dashboard |
+| `scripts/retention.py` | Data retention purge (auto-scheduled + CLI) |
+| `scripts/load_gtfs_static.py` | Download & parse static GTFS into JSON lookups |
 
 ## Feature vector
 
@@ -233,15 +235,36 @@ Only one env var change is needed — the rest of the codebase is DB-agnostic:
 DATABASE_URL=postgresql+psycopg2://user:password@host:5432/dbname
 ```
 
-## Static GTFS data (route/stop enrichment)
+## Data retention
 
-Download the Chapel Hill Transit schedule data to enrich the dashboard with route names and official colors:
+The poller automatically purges rows older than `RETENTION_DAYS` (default 30) every 6 hours to keep the database within free-tier storage limits (e.g. Supabase's 500 MB cap).
+
+You can also run the retention script manually:
+
+```bash
+# Preview what would be deleted
+python scripts/retention.py --dry-run
+
+# Delete rows older than 14 days
+python scripts/retention.py --days 14
+```
+
+## Static GTFS data (route/stop/schedule enrichment)
+
+Download the Chapel Hill Transit schedule data to enrich the dashboard with route names and official colors, and to enable schedule-based delay computation:
 
 ```bash
 python scripts/load_gtfs_static.py
 ```
 
-This downloads `http://mychtransit.org/gtfs` and produces JSON lookup files in `data/gtfs_static/`. The dashboard automatically loads these if present.
+This downloads `http://mychtransit.org/gtfs` and produces JSON lookup files in `data/gtfs_static/`:
+
+| File | Purpose |
+|---|---|
+| `route_lookup.json` | Route short names, long names, colors — used by the dashboard |
+| `stop_lookup.json` | Stop names and coordinates |
+| `schedule_lookup.json` | Trip-stop scheduled arrival times — used by the poller to compute delay when the GTFS-RT feed provides predicted arrival time but no explicit delay field |
+| `agency_info.json` | Agency timezone (for schedule time conversion) |
 
 ## Real-time feed
 

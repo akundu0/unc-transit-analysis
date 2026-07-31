@@ -140,7 +140,7 @@ def query_route_summary(since: datetime) -> pd.DataFrame:
 def query_delay_timeseries(since: datetime) -> pd.DataFrame:
     """Average delay per route per 5-minute bucket for trend charts."""
     sql = text("""
-        SELECT route_id, ROUND(predicted_arrival_delay_seconds / 60.0, 1) AS delay, polled_at
+        SELECT route_id, predicted_arrival_delay_seconds AS delay_s, polled_at
         FROM trip_updates
         WHERE polled_at >= :since
           AND predicted_arrival_delay_seconds IS NOT NULL
@@ -154,11 +154,14 @@ def query_delay_timeseries(since: datetime) -> pd.DataFrame:
     df["polled_at"] = pd.to_datetime(df["polled_at"])
     df["time"] = df["polled_at"].dt.floor("5min")
     agg = df.groupby(["route_id", "time"]).agg(
-        mean_delay=("delay", "mean"), obs=("delay", "count")
+        mean_delay=("delay_s", "mean"), obs=("delay_s", "count")
     ).reset_index()
+    # Convert from seconds to minutes after aggregation to preserve precision
+    agg["mean_delay"] = (agg["mean_delay"] / 60.0).round(1)
     return agg
 
 
+@st.cache_data(ttl=REFRESH_SECONDS)
 def check_api_health() -> bool:
     try:
         return requests.get(f"{SERVING_URL}/healthz", timeout=2).status_code == 200
@@ -178,6 +181,8 @@ def fetch_serving_logs(limit: int = 200) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         if "predicted_delay_seconds" in df.columns:
             df["predicted_delay_min"] = (df["predicted_delay_seconds"] / 60.0).round(1)
+        else:
+            df["predicted_delay_min"] = float("nan")
         return df
     except Exception:
         return pd.DataFrame()
