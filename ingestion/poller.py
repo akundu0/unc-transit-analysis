@@ -105,11 +105,11 @@ def _write_vehicle_positions(feed: gtfs_realtime_pb2.FeedMessage, polled_at: dat
                 route_id=route_id,
                 lat=pos.latitude if pos else None,
                 lon=pos.longitude if pos else None,
-                bearing=pos.bearing if pos and pos.bearing else None,
-                speed=pos.speed if pos and pos.speed else None,
-                current_status=v.current_status if v.current_status else None,
-                stop_id=v.stop_id or None,
-                stop_sequence=v.current_stop_sequence or None,
+                bearing=pos.bearing if pos and pos.HasField("bearing") else None,
+                speed=pos.speed if pos and pos.HasField("speed") else None,
+                current_status=v.current_status if v.HasField("current_status") else None,
+                stop_id=v.stop_id if v.stop_id else None,
+                stop_sequence=v.current_stop_sequence if v.HasField("current_stop_sequence") else None,
                 polled_at=polled_at,
             )
         )
@@ -146,8 +146,8 @@ def _write_trip_updates(feed: gtfs_realtime_pb2.FeedMessage, polled_at: datetime
                 TripUpdate(
                     trip_id=trip_id,
                     route_id=route_id,
-                    stop_id=stu.stop_id or None,
-                    stop_sequence=stu.stop_sequence or None,
+                    stop_id=stu.stop_id if stu.HasField("stop_id") else None,
+                    stop_sequence=stu.stop_sequence if stu.HasField("stop_sequence") else None,
                     predicted_arrival_delay_seconds=arrival_delay,
                     predicted_departure_delay_seconds=departure_delay,
                     arrival_time=arrival_time,

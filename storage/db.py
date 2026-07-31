@@ -73,7 +73,6 @@ def init_db():
     except Exception as exc:
         print(f"[storage] Alembic migration skipped ({exc}), falling back to create_all")
 
-
     from storage import models  # noqa: F401 — registers ORM metadata
     Base.metadata.create_all(bind=engine)
     print(f"[storage] Database initialised (create_all) → {_safe_url()}")

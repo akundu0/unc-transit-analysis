@@ -210,11 +210,13 @@ DATABASE_URL=postgresql+psycopg2://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-
 
 **Free tier:** 500 MB storage, 50 connections, daily backups.
 
-To use Supabase with Docker Compose:
+To use Supabase with Docker Compose, set `DATABASE_URL` in `.env` to your Supabase connection string, then:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.supabase.yml up --build -d
+docker compose up --build -d
 ```
+
+The local Postgres container will start but remain unused — all services read `DATABASE_URL` from `.env`.
 
 ### Option 3: Local Postgres (via Docker Compose)
 
