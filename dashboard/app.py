@@ -46,13 +46,6 @@ def route_color_map() -> dict[str, str]:
     """Return {route_short_name: hex_color} for plotly charts."""
     return {k: v["color"] for k, v in ROUTE_LOOKUP.items() if v.get("color")}
 
-def route_display_name(short: str) -> str:
-    """Return 'NS — Eubanks Rd / Southern Village' or just 'NS' if lookup missing."""
-    meta = ROUTE_LOOKUP.get(short)
-    if meta and meta.get("long_name"):
-        return f"{short} — {meta['long_name']}"
-    return short
-
 st.set_page_config(
     page_title="UNC Transit Delay Dashboard",
     page_icon="🚌",

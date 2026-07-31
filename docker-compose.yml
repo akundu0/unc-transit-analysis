@@ -5,6 +5,7 @@ x-common-env: &common-env
   GTFS_RT_VEHICLE_POSITIONS_URL: ${GTFS_RT_VEHICLE_POSITIONS_URL:-https://mychtransit.org/gtfs-rt/vehiclepositions}
   GTFS_RT_TRIP_UPDATES_URL: ${GTFS_RT_TRIP_UPDATES_URL:-https://mychtransit.org/gtfs-rt/tripupdates}
   POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+  RETENTION_DAYS: ${RETENTION_DAYS:-30}
   SERVING_API_URL: http://api:8000
   DASHBOARD_REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-15}
 

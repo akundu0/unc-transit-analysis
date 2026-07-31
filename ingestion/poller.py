@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -41,6 +42,8 @@ TRIP_UPDATES_URL = os.getenv(
     "http://localhost:8999/mock/trip_updates",         # placeholder / mock
 )
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "15"))
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
+_RETENTION_INTERVAL = 6 * 3600  # run retention purge every 6 hours
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +189,29 @@ async def poll_once(client: httpx.AsyncClient) -> None:
 async def run_poller() -> None:
     """Long-lived async loop. Runs forever; Ctrl-C to stop."""
     init_db()
-    log.info("Poller starting — interval=%ds", POLL_INTERVAL)
+    log.info("Poller starting — interval=%ds, retention=%dd", POLL_INTERVAL, RETENTION_DAYS)
     log.info("  VehiclePositions → %s", VEHICLE_POSITIONS_URL)
     log.info("  TripUpdates      → %s", TRIP_UPDATES_URL)
+
+    last_retention = 0.0  # epoch — ensures first purge runs on startup
 
     async with httpx.AsyncClient() as client:
         while True:
             await poll_once(client)
+
+            # Periodic data retention purge
+            now = time.monotonic()
+            if now - last_retention >= _RETENTION_INTERVAL:
+                try:
+                    from scripts.retention import purge_old_rows
+                    result = purge_old_rows(retention_days=RETENTION_DAYS)
+                    total = sum(result.values())
+                    if total > 0:
+                        log.info("[retention] Purged %d old rows", total)
+                except Exception as exc:
+                    log.warning("[retention] Purge failed: %s", exc)
+                last_retention = now
+
             await asyncio.sleep(POLL_INTERVAL)
 
 
