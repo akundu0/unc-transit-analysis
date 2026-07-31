@@ -77,8 +77,8 @@ def query_vehicle_positions(since: datetime, limit: int = 5000) -> pd.DataFrame:
 def query_trip_updates(since: datetime, limit: int = 5000) -> pd.DataFrame:
     sql = text("""
         SELECT trip_id, route_id, stop_id, stop_sequence,
-               predicted_arrival_delay_seconds AS delay_s,
-               predicted_departure_delay_seconds AS dep_delay_s,
+               ROUND(predicted_arrival_delay_seconds / 60.0, 1) AS delay_min,
+               ROUND(predicted_departure_delay_seconds / 60.0, 1) AS dep_delay_min,
                arrival_time, polled_at
         FROM trip_updates
         WHERE polled_at >= :since
@@ -120,9 +120,9 @@ def query_route_summary(since: datetime) -> pd.DataFrame:
     sql = text("""
         SELECT route_id,
                COUNT(*)                                       AS obs,
-               ROUND(AVG(predicted_arrival_delay_seconds), 1) AS mean_delay,
-               MIN(predicted_arrival_delay_seconds)           AS min_delay,
-               MAX(predicted_arrival_delay_seconds)           AS max_delay,
+               ROUND(AVG(predicted_arrival_delay_seconds) / 60.0, 1) AS mean_delay_min,
+               ROUND(MIN(predicted_arrival_delay_seconds) / 60.0, 1) AS min_delay_min,
+               ROUND(MAX(predicted_arrival_delay_seconds) / 60.0, 1) AS max_delay_min,
                MIN(polled_at) AS first_seen,
                MAX(polled_at) AS last_seen
         FROM trip_updates
@@ -130,7 +130,7 @@ def query_route_summary(since: datetime) -> pd.DataFrame:
           AND predicted_arrival_delay_seconds IS NOT NULL
           AND route_id IS NOT NULL
         GROUP BY route_id
-        ORDER BY mean_delay DESC
+        ORDER BY mean_delay_min DESC
     """)
     with engine.connect() as conn:
         return pd.read_sql(sql, conn, params={"since": since})
@@ -140,7 +140,7 @@ def query_route_summary(since: datetime) -> pd.DataFrame:
 def query_delay_timeseries(since: datetime) -> pd.DataFrame:
     """Average delay per route per 5-minute bucket for trend charts."""
     sql = text("""
-        SELECT route_id, predicted_arrival_delay_seconds AS delay, polled_at
+        SELECT route_id, ROUND(predicted_arrival_delay_seconds / 60.0, 1) AS delay, polled_at
         FROM trip_updates
         WHERE polled_at >= :since
           AND predicted_arrival_delay_seconds IS NOT NULL
@@ -176,6 +176,8 @@ def fetch_serving_logs(limit: int = 200) -> pd.DataFrame:
             return pd.DataFrame()
         df = pd.DataFrame(data)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if "predicted_delay_seconds" in df.columns:
+            df["predicted_delay_min"] = (df["predicted_delay_seconds"] / 60.0).round(1)
         return df
     except Exception:
         return pd.DataFrame()
@@ -282,11 +284,11 @@ with tab_live:
     with col2:
         st.metric("Active routes", tu_df["route_id"].nunique() if not tu_df.empty else 0)
     with col3:
-        avg_delay = tu_df["delay_s"].mean() if not tu_df.empty else 0
-        st.metric("Avg delay (s)", f"{avg_delay:.0f}")
+        avg_delay = tu_df["delay_min"].mean() if not tu_df.empty else 0
+        st.metric("Avg delay (min)", f"{avg_delay:.1f}")
     with col4:
-        max_delay = tu_df["delay_s"].max() if not tu_df.empty else 0
-        st.metric("Max delay (s)", f"{max_delay:.0f}")
+        max_delay = tu_df["delay_min"].max() if not tu_df.empty else 0
+        st.metric("Max delay (min)", f"{max_delay:.1f}")
 
     st.divider()
 
@@ -333,13 +335,13 @@ with tab_live:
                 .drop_duplicates(subset=["route_id"], keep="last")
             )
             fig_bar = px.bar(
-                latest_tu.sort_values("delay_s", ascending=True),
-                x="delay_s",
+                latest_tu.sort_values("delay_min", ascending=True),
+                x="delay_min",
                 y="route_id",
                 orientation="h",
-                color="delay_s",
+                color="delay_min",
                 color_continuous_scale=["green", "gold", "red"],
-                labels={"delay_s": "Delay (seconds)", "route_id": "Route"},
+                labels={"delay_min": "Delay (min)", "route_id": "Route"},
                 height=420,
             )
             fig_bar.update_layout(
@@ -379,7 +381,7 @@ with tab_hist:
             y="mean_delay",
             color="route_id",
             color_discrete_map=_colors if _colors else None,
-            labels={"mean_delay": "Mean delay (s)", "time": "Time (UTC)"},
+            labels={"mean_delay": "Mean delay (min)", "time": "Time (UTC)"},
             height=400,
         )
         fig_ts.update_layout(margin=dict(t=20, b=20))
@@ -400,11 +402,11 @@ with tab_hist:
             _colors = route_color_map()
             fig_hist = px.histogram(
                 tu_df,
-                x="delay_s",
+                x="delay_min",
                 color="route_id",
                 color_discrete_map=_colors if _colors else None,
                 nbins=40,
-                labels={"delay_s": "Delay (seconds)"},
+                labels={"delay_min": "Delay (min)"},
                 height=350,
                 barmode="overlay",
                 opacity=0.7,
@@ -422,11 +424,11 @@ with tab_hist:
         if not tu_df.empty and len(tu_df) > 10:
             heat = tu_df.copy()
             heat["hour"] = heat["polled_at"].dt.hour
-            pivot = heat.groupby(["route_id", "hour"])["delay_s"].mean().reset_index()
-            pivot_wide = pivot.pivot(index="route_id", columns="hour", values="delay_s")
+            pivot = heat.groupby(["route_id", "hour"])["delay_min"].mean().reset_index()
+            pivot_wide = pivot.pivot(index="route_id", columns="hour", values="delay_min")
             fig_heat = px.imshow(
                 pivot_wide,
-                labels=dict(x="Hour of day", y="Route", color="Avg delay (s)"),
+                labels=dict(x="Hour of day", y="Route", color="Avg delay (min)"),
                 color_continuous_scale="RdYlGn_r",
                 aspect="auto",
                 height=350,
@@ -445,9 +447,9 @@ with tab_routes:
             route_df.rename(columns={
                 "route_id": "Route",
                 "obs": "Observations",
-                "mean_delay": "Mean delay (s)",
-                "min_delay": "Min delay (s)",
-                "max_delay": "Max delay (s)",
+                "mean_delay_min": "Mean delay (min)",
+                "min_delay_min": "Min delay (min)",
+                "max_delay_min": "Max delay (min)",
                 "first_seen": "First seen",
                 "last_seen": "Last seen",
             }),
@@ -468,10 +470,10 @@ with tab_routes:
         fig_box = px.box(
             tu_df,
             x="route_id",
-            y="delay_s",
+            y="delay_min",
             color="route_id",
             color_discrete_map=_colors if _colors else None,
-            labels={"delay_s": "Delay (seconds)", "route_id": "Route"},
+            labels={"delay_min": "Delay (min)", "route_id": "Route"},
             height=400,
         )
         fig_box.update_layout(margin=dict(t=20, b=20), showlegend=False)
@@ -505,9 +507,9 @@ with tab_api:
             fig_pred = px.line(
                 logs_df.sort_values("timestamp"),
                 x="timestamp",
-                y="predicted_delay_seconds",
+                y="predicted_delay_min",
                 color="route_id",
-                labels={"predicted_delay_seconds": "Delay (s)", "timestamp": "Time"},
+                labels={"predicted_delay_min": "Delay (min)", "timestamp": "Time"},
                 height=320,
             )
             fig_pred.update_layout(margin=dict(t=20, b=20))
