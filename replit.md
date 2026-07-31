@@ -10,7 +10,7 @@ Real-time ML pipeline that predicts bus arrival delays for UNC/Chapel Hill Trans
 - `python -m model.train` — train the Keras model on accumulated data
 - `uvicorn serving.app:app --host 0.0.0.0 --port 8000` — start the FastAPI prediction API
 - `streamlit run dashboard/app.py` — launch the Streamlit live dashboard
-- `pip install -r requirements.txt` — install all Python dependencies
+- `pip install -r requirements-full.txt` — install all Python dependencies
 
 ### TypeScript workspace (scaffolding base)
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
@@ -45,7 +45,8 @@ Real-time ML pipeline that predicts bus arrival delays for UNC/Chapel Hill Trans
 /model/artifacts/           — saved model + scaler
 /serving/app.py             — FastAPI /predict + /logs endpoints
 /dashboard/app.py           — Streamlit live dashboard
-requirements.txt            — all Python dependencies
+requirements-full.txt       — all Python dependencies (training + serving)
+requirements.txt            — dashboard-only deps (for Streamlit Cloud)
 .env.example                — environment variable template
 ```
 

@@ -114,7 +114,7 @@ docker compose up --build -d
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-full.txt
 ```
 
 ### 2. Configure environment
